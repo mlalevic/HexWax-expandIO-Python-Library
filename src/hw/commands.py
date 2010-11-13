@@ -1,27 +1,3 @@
-"""
-Null().send()
-GetReg("TXSTA").send()
-SetReg("TXSTA", 0x0).send()
-GetBit("TXSTA", 1).send()
-SetBit("TXSTA", 1, OFF).send()
-GetPort("A", mask).send()
-SetPort("A", mask, value).send()
-GetPortBit("A", bit, mask).send()
-SetPortBit("A", bit, value).send()
-GetAnalog("AN0", mode).send()
-SetSerial(UNIO/SPI/I2C, mode/freq/clock, mode/port).send()
-ExecSPI(data).send()
-ExecUNIO(???).send()
-ExecI2C(read/write/regread, data).send()
-Wait(???)
-MatrixScan(???)
-Display(???)
-GetFirmware().send()
-Stream(???)
-
-Receive - Interrupt
-"""
-
 def _to_freq(number):
     suffix = ""
     if number > 1000:
@@ -40,16 +16,19 @@ class Wait:
 
 class Analog:
     """Relevant bits"""
-    CONTROL_MASK = 0x1F
+    CONTROL_MASK = 0x3F
 
-    """Last 3 bits are determining analog input pin number"""
-    PIN_MASK = 0x07
+    """Last 4 bits are determining analog input pin number"""
+    PIN_MASK = 0x0F
+
+    """Bits 4 and 5 are used as options pins"""
+    OPTIONS_MASK = 0x30
 
     """Use VRef+ (AN3) as positive voltage reference"""
-    USE_VREF_PLUS = 0x08
+    USE_VREF_PLUS = 0x10
 
     """Use VRef- (AN2) as negative voltage reference"""
-    USE_VREF_MINUS = 0x10
+    USE_VREF_MINUS = 0x20
 
     """Maximum value returned by ADC"""
     MAX = 0x3FF
@@ -235,6 +214,10 @@ class Command:
     Stream = 0xAD
     GetFirmware = 0x94
 
+class Direction:
+    INPUT = 0x01
+    OUTPUT = 0x00
+
 #### start pack
 class Null:
     id = Command.Null
@@ -263,6 +246,21 @@ class GetReg:
     def __str__(self):
         return "GetReg(%s)" % self.regname
 
+class SetReg:
+    id = Command.SetReg
+    len = 4
+
+    def __init__(self, regname, value):
+        self.regname = regname
+        self.reg = registers[regname]
+        self.value = value
+
+    def pack(self):
+        return [self.id, self.reg, self.value, 0x0]
+
+    def __str__(self):
+        return "SetReg(%s) = 0x%X" %(self.regname, self.value)
+
 class SetBit:
     id = Command.SetBit
     len = 4
@@ -279,6 +277,21 @@ class SetBit:
     def __str__(self):
         return "Reg[%s].%i = %i" % (self.regname, self.bitno, self.value)
 
+class GetBit:
+    id = Command.GetBit
+    len = 4
+
+    def __init__(self, regname, bitno):
+        self.regname = regname
+        self.reg = registers[regname]
+        self.bitno = bitno
+
+    def pack(self):
+        return [self.id, self.reg, self.bitno, 0x0]
+
+    def __str__(self):
+        return "GetBit[%s].%i" % (self.regname, self.bitno)
+
 class SetPortBit:
     id = Command.SetPortBit
     len = 4
@@ -293,6 +306,90 @@ class SetPortBit:
 
     def __str__(self):
         return "Port[%s].%i = %i" % (Port.Names[self.port], self.bitno, self.value)
+
+class GetPortBit:
+    id = Command.GetPortBit
+    len = 4
+
+    def __init__(self, port, bitno, direction):
+        self.port = port
+        self.bitno = bitno
+        self.direction = direction
+
+    def pack(self):
+        return [self.id, self.port, self.bitno, self.direction]
+
+    def __str__(self):
+        if self.direction == Direction.INPUT:
+            dir = "Input"
+        else:
+            dir = "Output"
+
+        direction
+        return "GetPort[%s].%i as %s" % (Port.Names[self.port], self.bitno, dir)
+
+class GetPort:
+    id = Command.GetPort
+    len = 4
+
+    def __init__(self, port, mask):
+        self.port = port
+        self.mask = mask
+
+    def pack(self):
+        return [self.id, self.port, 0x0, self.mask]
+
+    def __str__(self):
+        return "Port(%s) with 0x%X" % (Port.Names[self.port], self.mask)
+
+class SetPort:
+    id = Command.SetPort
+    len = 4
+
+    def __init__(self, port, value, direction_mask):
+        self.port = port
+        self.value = value
+        self.mask = direction_mask
+
+    def pack(self):
+        return [self.id, self.port, self.value, self.mask]
+
+    def __str__(self):
+        return "Port[%s] = 0x%X & 0x%X" % (Port.Names[self.port], self.value, self.mask)
+
+class GetAnalog:
+    id = Command.GetAnalog
+    len = 4
+
+    def __init__(self, pin, options = 0x0):
+        """
+        Pass options like Analog.USE_VREF_PLUS | Analog.USE_VREF_MINUS
+        """
+        self.pin = pin & Analog.PIN_MASK
+        self.options = options
+
+    def pack(self):
+        return [self.id, self.pin | self.options, 0x0, 0x0]
+
+    def __str__(self):
+        return "GetAnalog[%i] with %s and %s" % (self.pin, self.mask)
+
+class Wait:
+    id = Command.Wait
+    len = 4
+
+    def __init__(self, regname, pin, value, timeout):
+        self.regname = regname
+        self.reg = registers[regname]
+        self.pin = pin & 0x07 #only bits 0-2 relevant
+        self.value = value & 0x01 #only bit 0 relevant
+        self.timeout = timeout
+
+    def pack(self):
+        return [self.id, self.reg, self.pin | (self.value << 7), 0x0]
+
+    def __str__(self):
+        return "Wait[%s].%i = %i for %i ms" % (self.regname, self.pin, self.value, self.timeout)
 
 class GetFirmware:
     id = Command.GetFirmware
@@ -645,7 +742,8 @@ class WaitUnpack(Reader):
 
 ###### end unpack
 
-Command.packers = [Null, GetReg, SetBit, SetPortBit, GetFirmware]
+Command.packers = [Null, GetReg, SetBit, SetPortBit, GetFirmware, GetPortBit, \
+                   SetReg, GetBit, GetPort, SetPort, GetAnalog, Wait]
 Command.unpackers = [FirmwareUnpack, NullUnpack, ErrorUnpack, GetPortBitUnpack,\
                      SetPortBitUnpack, GetBitUnpack, SetBitUnpack, GetRegUnpack,\
                      SetRegUnpack, GetPortUnpack, SetPortUnpack, GetAnalogUnpack, \
