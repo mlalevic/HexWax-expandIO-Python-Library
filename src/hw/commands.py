@@ -10,6 +10,8 @@ def _to_freq(number):
 
     return "%.3f%s"%(number, suffix)
 
+_MAX_PACKET_SIZE = 64
+
 class Wait:
     WAIT_ON_SET = 0x80
     WAIT_BIT_MASK = 0x07
@@ -96,6 +98,27 @@ class Serial:
 
     """USB-XP = 48MHz"""
     F0_USB_XP = 48000000
+
+    """8 bit address"""
+    UNIO_ADDRESS_8 = 8
+
+    """12 bit address"""
+    UNIO_ADDRESS_12 = 12
+
+    """16 bit address"""
+    UNIO_ADDRESS_16 = 16
+
+    """Bit 7 indicates UNIO - poll only"""
+    UNIO_POLL = 0x80
+
+    """Data count - bits 0-5"""
+    UNIO_DATA_COUNT_MASK = 0x3F
+
+    """Bit 6 indicates whether standby puls is NOT required"""
+    UNIO_NO_STANDBY_PULSE = 0x40
+
+    """Bit 7 indicates 250-bus-clock-cycle"""
+    UNIO_BUS_CLOCK_CYCLE_INDICATOR = 0x80
 
     @classmethod
     def get_baude_rate(cls, freq, divider):
@@ -213,6 +236,14 @@ class Command:
     MultiplexData = 0xAC
     Stream = 0xAD
     GetFirmware = 0x94
+
+    @classmethod
+    def unpack(cls, packet):
+        for handler in cls.unpackers:
+            if handler.can_handle(packet):
+                return handler(packet)
+        #if none found return none
+        return None
 
 class Direction:
     INPUT = 0x01
@@ -391,6 +422,235 @@ class Wait:
     def __str__(self):
         return "Wait[%s].%i = %i for %i ms" % (self.regname, self.pin, self.value, self.timeout)
 
+class ConfigureSpi:
+    id = Command.SetSerial
+    len = 4
+
+    def __init__(self, speed, config):
+        self.speed = speed
+        self.config_polarity = (config & Serial.SPI_CLOCK_POLARITY)
+        self.config_enabled = (config & Serial.SPI_ENABLED)
+        self.config_sample = (config & Serial.SPI_SAMPLE)
+        self.config_transition = (config & Serial_SPI_TRANSITION)
+
+    def pack(self):
+        return [self.id, (self.config_sample | self.config_transition) & Serial.SPI_MODE_MASK, (self.config_enabled | self.config_polarity | self.speed) & Serial.SPI_CONTROL_MASK, 0x0]
+
+    def __str__(self):
+        if self.config_sample > 0:
+            sample = "Sample End"
+        else:
+            sample = "Sample Mid"
+
+        if self.config_transition > 0:
+            tran = "Transition A->I"
+        else:
+            tran = "Transition I->A"
+
+        if self.config_polarity > 0:
+            pol = "Hight"
+        else:
+            pol = "Low"
+
+        if self.config_enabled > 0:
+            en = "Enabled"
+        else:
+            en = "Disabled"
+
+        # do speed
+        if self.speed == Serial.SPI_SPEED_TMR2_2:
+            speed = "TMR2/2"
+        elif self.speed == Serial.SPI_SPEED_Fo_64:
+            speed = _to_freq(Serial.F0_ExpandIO / 64)
+        elif self.speed == Serial.SPI_SPEED_Fo_16:
+            speed = _to_freq(Serial.F0_ExpandIO / 16)
+        elif self.speed == Serial.SPI_SPEED_Fo_4:
+            speed = _to_freq(Serial.F0_ExpandIO / 4)
+
+        return "ConfigureSPI(%s, %s %s, Polarity %s) @ %s" % (en, sample, tran, pol, speed)
+
+class ConfigureI2C:
+    id = Command.SetSerial
+    len = 4
+
+    def __init__(self, speed, slew_disabled = True):
+        self.speed = speed
+        if slew_disabled:
+            self.config_slew = Serial.I2C_SLEW
+        else:
+            self.config_slew = 0x0
+
+    def pack(self):
+        return [self.id, (Serial.I2C_INDICATOR | self.config_slew) & Serial.INDICATOR_MASK, self.speed, 0x0]
+
+    def __str__(self):
+        if self.config_slew > 0:
+            slew = "OFF"
+        else:
+            slew = "ON"
+        return "ConfigureI2C (Slew %s) @ %d " % (slew, Serial.get_baude_rate(Serial.F0_ExpandIO, self.speed))
+
+class ConfigureUNIO:
+    id = Command.SetSerial
+    len = 4
+
+    def __init__(self, speed, port, scio_pin):
+        if speed < Serial.UNIO_SPEED_DIVIDER_MIN:
+            raise ValueError("Minimum value for UNIO speed is 0x%X, 0x%X passed" % (Serial.UNIO_SPEED_DIVIDER_MIN, speed))
+        self.speed = speed
+        self.port = port
+        self.scio_pin = scio_pin
+
+    def pack(self):
+        return [self.id, Serial.UNIO_INDICATOR, self.speed, ((self.port << 4) | self.scio_pin) & 0xF7]
+
+    def __str__(self):
+        if self.speed == 0:
+            freq = "unknown"
+        else:
+            freq = _to_freq(3000000/2/self.speed)
+
+        return "ConfigureUNI/O(%d.%d) @ %s" % (self.port, self.scio_pin, freq)
+
+class SpiPacket:
+    id = Command.ExeSPI
+
+    def __init__(self, data):
+        self.data_len = len(data)
+        if(self.data_len > _MAX_PACKET_SIZE - 2):
+            raise ValueError("Invalid data size, cannot be greater than %d, data size passed in: %d" % (_MAX_PACKET_SIZE - 2, self.data_len))
+
+        if(self.data_len > 2):
+            self.len = _MAX_PACKET_SIZE
+        else:
+            self.len = 4
+
+        self.data = data
+
+    def pack(self):
+        return [self.id, self.data_len] + self.data + [0x0]*(_MAX_PACKET_SIZE - self.data_len - 2)
+
+    def __str__(self):
+        return "SpiPacket(%d) = %s" % (self.data_len, str(self.data))
+
+class UnioPacket:
+    id = Command.ExeUNIO
+    len = _MAX_PACKET_SIZE
+
+    def __init__(self, port, scio_pin, address, address_type, data, read_count, command = None, standby_pulse_required = True, bus_clock_cycle_required = False):
+        self.data_len = len(data)
+        if(self.data_len > _MAX_PACKET_SIZE - 7):
+            raise ValueError("Invalid data size, cannot be greater %d, data size passed in: %d" % (_MAX_PACKET_SIZE - 7, self.data_len))
+        self.data = data
+        self.port = port
+        self.scio_pin = scio_pin & Serial.UNIO_BIT_MASK
+        self.port_config = (port << 4) | self.scio_pin
+        self.address = address
+        self.address_type = address_type
+        if self.address_type == Serial.UNIO_ADDRESS_8:
+            self.address_config = [0x0, self.address & 0x0F]
+        elif self.address_type == Serial.UNIO_ADDRESS_12:
+            self.address_config = [0xF0 | (self.address >> 8), self.address & 0xFF]
+        else:
+            self.address_config = [0xFF & (self.address >> 8), self.address & 0xFF]
+
+        self.read_count = read_count
+        if command is None:
+            write_config = Serial.UNIO_POLL
+            self.command = 0
+        else:
+            write_config = 0
+            self.command = command
+
+        if not standby_pulse_required:
+            write_config |= Serial.UNIO_NO_STANDBY_PULSE
+
+        self.write_config = write_config | (self.data_len & Serial.UNIO_DATA_COUNT_MASK)
+
+        if bus_clock_cycle_required:
+            read_config = Serial.UNIO_BUS_CLOCK_CYCLE_INDICATOR
+        else:
+            read_config = 0
+
+        self.read_config = read_config | (self.read_count & Serial.UNIO_DATA_COUNT_MASK)
+
+    def pack(self):
+        return [self.id, self.port_config] + self.address_config + [self.command, self.write_config, self.read_config] + self.data + [0x0]*(_MAX_PACKET_SIZE - self.data_len - 7)
+
+    def __str__(self):
+        if self.write_config & Serial.UNIO_POLL > 0:
+            poll = "Poll Only"
+        else:
+            poll = "Command(0x%X)" % self.command
+
+        if self.write_config & Serial.UNIO_NO_STANDBY_PULSE > 0:
+            standby = "with standby"
+        else:
+            standby = ""
+
+        if self.read_config & Serial.UNIO_BUS_CLOCK_CYCLE_INDICATOR > 0:
+            cycle = "with"
+        else:
+            cycle = "no"
+        return "UnioPacket(%d.%d) 0x%X, %s %s, %s clock cycle, and read %d, send: %s" % (self.port, self.scio_pin, self.address, poll, standby, cycle, self.read_count, str(self.data))
+
+class I2cRead:
+    id = Command.ExeI2C
+    len = 64
+
+    def __init__(self, address, data_len):
+        self.data_len = data_len
+        self.address = address
+
+    def pack(self):
+        #0x1 is read (put into constants
+        return [self.id, 0x1, self.data_len] + [0x0]*(_MAX_PACKET_SIZE - 4)
+
+    def __str__(self):
+        return "I2cRead(0x%X) len %d" % (self.address, self.data_len)
+
+
+class I2cWrite:
+    id = Command.ExeI2C
+    len = 64
+
+    def __init__(self, address, data):
+        self.data_len = len(data)
+        if self.data_len > _MAX_PACKET_SIZE - 4:
+            raise ValueError("Invalid data size, cannot be greater than %d, data size passed in: %d" % (_MAX_PACKET_SIZE - 4, self.data_len))
+        self.data = data
+        self.address = address
+
+    def pack(self):
+        #0x0 is write
+        return [self.id, 0x0, self.address, self.data_len] + self.data + [0x0]*(_MAX_PACKET_SIZE - 4 - self.data_len)
+
+    def __str__(self):
+        return "I2cWrite(0x%X) write %d = %s" % (self.address, self.data_len, str(self.data))
+
+
+
+class I2cRegisterRead:
+    id = Command.ExeI2C
+    len = 64
+
+    def __init__(self, address, data, len_to_read):
+        self.data_len = len(data)
+        if self.data_len > _MAX_PACKET_SIZE - 5:
+            raise ValueError("Invalid data size, cannot be greater than %d, data size passed in: %d" % (_MAX_PACKET_SIZE - 5, self.data_len))
+        self.data = data
+        self.address = address
+        self.len_to_read = len_to_read
+
+    def pack(self):
+        #0x2 is read register
+        return [self.id, 0x2, self.address, self.data_len, self.len_to_read] + self.data + [0x0]*(_MAX_PACKET_SIZE - 5 - self.data_len)
+
+    def __str__(self):
+        return "I2cRegRead(0x%X) read len %d, write %d = %s" % (self.address, self.len_to_read, self.data_len, str(self.data))
+
+
+
 class GetFirmware:
     id = Command.GetFirmware
     len = 4
@@ -436,7 +696,7 @@ class NullUnpack(Reader):
         while len(packet) > 0 and self.can_handle(packet):
             packet = packet[self.len:]
             self.len += 4
-        if self.len == 64:
+        if self.len == _MAX_PACKET_SIZE:
             self.all_null = True
 
     def __str__(self):
@@ -683,7 +943,7 @@ class ExeSpiUnpack(Reader):
 
 class ExeUNIOUnpack(Reader):
     id = Command.ExeUNIO
-    len = 64 #I'm still not sure how do you determine response size if you don't do request response
+    len = _MAX_PACKET_SIZE #I'm still not sure how do you determine response size if you don't do request response
              # code using this has to handle that
 
     def __init__(self, packet):
@@ -695,7 +955,7 @@ class ExeUNIOUnpack(Reader):
 
 class ExeI2CUnpack(Reader):
     id = Command.ExeI2C
-    len = 64 #I'm still not sure how do you determine response size if you don't do request response
+    len = _MAX_PACKET_SIZE #I'm still not sure how do you determine response size if you don't do request response
              # code using this has to handle that
 
     def __init__(self, packet):
@@ -743,7 +1003,9 @@ class WaitUnpack(Reader):
 ###### end unpack
 
 Command.packers = [Null, GetReg, SetBit, SetPortBit, GetFirmware, GetPortBit, \
-                   SetReg, GetBit, GetPort, SetPort, GetAnalog, Wait]
+                   SetReg, GetBit, GetPort, SetPort, GetAnalog, ConfigureSpi, \
+                   ConfigureI2C, ConfigureUNIO, Wait, I2cRegisterRead, I2cRead, \
+                   I2cWrite, SpiPacket, UnioPacket]
 Command.unpackers = [FirmwareUnpack, NullUnpack, ErrorUnpack, GetPortBitUnpack,\
                      SetPortBitUnpack, GetBitUnpack, SetBitUnpack, GetRegUnpack,\
                      SetRegUnpack, GetPortUnpack, SetPortUnpack, GetAnalogUnpack, \

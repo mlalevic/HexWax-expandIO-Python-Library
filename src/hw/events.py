@@ -36,9 +36,9 @@ class SendHandler:
         Events.do(Actions.Log, command)
 
 class ReadHandler:
-    def __init__(self, handlers):
+    def __init__(self, unpacker):
         self.name = Actions.Read
-        self.handlers = handlers
+        self.unpacker = unpacker
 
     def handle(self, packet):
         while(len(packet) > 0):
@@ -47,13 +47,12 @@ class ReadHandler:
             Events.do(Actions.Update, response)
 
     def _unpack(self, packet):
-        for handler in self.handlers:
-            if handler.can_handle(packet):
-                response = handler(packet)
-                return (response, packet[response.len:])
-
-        Events.do(Actions.Log, "No handler for packet: %s" % str(packet))
-        return (None, [])
+        response = self.unpacker.unpack(packet)
+        if response is None:
+            Events.do(Actions.Log, "No handler for packet: %s" % str(packet))
+            return (None, [])
+        else:
+            return (response, packet[response.len:])
 
 class LogHandler:
     def __init__(self, logger):
