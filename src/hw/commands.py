@@ -431,7 +431,7 @@ class ConfigureSpi:
         self.config_polarity = (config & Serial.SPI_CLOCK_POLARITY)
         self.config_enabled = (config & Serial.SPI_ENABLED)
         self.config_sample = (config & Serial.SPI_SAMPLE)
-        self.config_transition = (config & Serial_SPI_TRANSITION)
+        self.config_transition = (config & Serial.SPI_TRANSITION)
 
     def pack(self):
         return [self.id, (self.config_sample | self.config_transition) & Serial.SPI_MODE_MASK, (self.config_enabled | self.config_polarity | self.speed) & Serial.SPI_CONTROL_MASK, 0x0]
@@ -764,7 +764,7 @@ class GetBitUnpack(Reader):
         self.value = packet[3]
 
     def __str__(self):
-        return "Reg(%s).%i = %i" %(regname(self.reg), self.bitno, self.value)
+        return "Reg(%s).%i = %i" %(reg_name(self.reg), self.bitno, self.value)
 
 class GetRegUnpack(Reader):
     id = Command.GetReg
@@ -786,7 +786,7 @@ class SetRegUnpack(Reader):
         self.value = packet[2]
 
     def __str__(self):
-        return "Done SetReg(%s) = 0x%X" %(regname(self.reg), self.value)
+        return "Done SetReg(%s) = 0x%X" %(reg_name(self.reg), self.value)
 
 class GetPortUnpack(Reader):
     id = Command.GetPort
@@ -848,9 +848,9 @@ class SetSerialUnpack(Reader):
 
 
     def _unpack_type(self, byte):
-        self.spi = (packet[1] & Serial.INDICATOR_MASK) == Serial.SPI_INDICATOR
-        self.unio = (packet[1] & Serial.INDICATOR_MASK) == Serial.UNIO_INDICATOR
-        self.i2c = (packet[1] & Serial.I2C_INDICATOR) != 0
+        self.spi = (byte & Serial.INDICATOR_MASK) == Serial.SPI_INDICATOR
+        self.unio = (byte & Serial.INDICATOR_MASK) == Serial.UNIO_INDICATOR
+        self.i2c = (byte & Serial.I2C_INDICATOR) != 0
 
     def _unpack_config(self, packet):
         if self.spi:
@@ -866,7 +866,7 @@ class SetSerialUnpack(Reader):
         self.mode = (packet[1] & Serial.SPI_MODE_MASK) >> 6
         self.enabled = (packet[2] & Serial.SPI_ENABLED) != 0
         self.polarity_high = (packet[2] & Serial.SPI_CLOCK_POLARITY) != 0
-        self.speed = packet[2] & Serial.SPI_SPEED
+        self.speed = packet[2] & Serial.SPI_SPEED_MASK
 
     def _unpack_unio(self, packet):
         self.speed = packet[2]
@@ -936,7 +936,7 @@ class ExeSpiUnpack(Reader):
     def __init__(self, packet):
         self.payload_length = packet[1]
         self.len = self.payload_length + 2
-        self.payload = packet[2:self.payload_lengt + 2]
+        self.payload = packet[2:self.payload_length + 2]
 
     def __str__(self):
         return "Done SendSPI(%d) = %s" % (self.payload_length, str(self.payload))
